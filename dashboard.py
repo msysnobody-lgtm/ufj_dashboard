@@ -18,13 +18,13 @@ st.set_page_config(page_title="UFJ-Bot ダッシュボード", layout="wide")
 # =========================================================
 load_dotenv()
 
-# ID取得 (環境変数優先、なければ直書き)
+# ID取得
 ENV_SHEET_ID = os.getenv("SPREADSHEET_ID")
 SHEET_KEY = (
     ENV_SHEET_ID if ENV_SHEET_ID else "1wKC4E_r1-1mhGSgIOkz4xRDCba2Ma9bq3phSnBrDXf8"
 )
 
-# パス解決 (Render優先 -> ローカル隣接 -> カレント)
+# パス解決
 CREDENTIALS_FILE = "credentials.json"
 LOCAL_ADJACENT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -79,6 +79,11 @@ def load_data():
             data_rt = sheet_rt.get_all_records()
             df_rt = pd.DataFrame(data_rt)
             if not df_rt.empty:
+                # カラム名がずれている場合の保険（CSVアップロード時などの対策）
+                # 1列目をTimeとして扱う
+                if "Time" not in df_rt.columns and len(df_rt.columns) >= 1:
+                    df_rt.rename(columns={df_rt.columns[0]: "Time"}, inplace=True)
+
                 df_rt["Datetime"] = pd.to_datetime(df_rt["Time"])
         except Exception:
             df_rt = pd.DataFrame()
@@ -124,12 +129,27 @@ if not df_realtime.empty and "Datetime" in df_realtime.columns:
     ].copy()
 
     if not df_today_log.empty:
-        buys = df_today_log[
-            df_today_log["Type"].str.contains("BUY", case=False, na=False)
-        ]["Price"].sum()
-        sells = df_today_log[
-            df_today_log["Type"].str.contains("SELL", case=False, na=False)
-        ]["Price"].sum()
+        # ★修正: "BUY/SELL" だけでなく "買い/売り" も検知するように変更
+        # 2列目(Type)を文字列にして判定
+        # カラム名が Type でない場合も考慮して、2番目のカラムを使うとより安全だが、
+        # ここでは "Type" カラムがあると仮定（gspreadのget_all_recordsは1行目をヘッダーにするため）
+
+        # 買いの合計
+        mask_buy = (
+            df_today_log["Type"]
+            .astype(str)
+            .str.contains("BUY|買い", case=False, na=False)
+        )
+        buys = df_today_log.loc[mask_buy, "Price"].sum()
+
+        # 売りの合計
+        mask_sell = (
+            df_today_log["Type"]
+            .astype(str)
+            .str.contains("SELL|売り", case=False, na=False)
+        )
+        sells = df_today_log.loc[mask_sell, "Price"].sum()
+
         today_profit = sells - buys
         today_trades = len(df_today_log) // 2
 
@@ -195,14 +215,7 @@ else:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # ★修正箇所: 履歴一覧 (常時表示・最新10件)
+    # 履歴一覧
     st.subheader("📋 履歴一覧 (最新10件)")
-
-    # 日付で降順ソートして、先頭10件を取得
     df_display = df_history.sort_values("日付", ascending=False).head(10)
-
-    st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,  # インデックス番号を隠してスッキリさせる
-    )
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
