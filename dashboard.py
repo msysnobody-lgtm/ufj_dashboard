@@ -113,58 +113,79 @@ df_history, df_realtime = load_data()
 if df_history is None:
     st.stop()
 
-# ---------------------------------------------------------
-# 🟢 セクション1：本日のリアルタイム状況
-# ---------------------------------------------------------
+# =========================================================
+# 🟢 セクション1：本日のリアルタイム状況 (修正版)
+# =========================================================
 st.header("🟢 本日のリアルタイム状況")
 
 today_profit = 0
 today_trades = 0
+current_position = None  # 現在保有中の価格
 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
 df_today_log = pd.DataFrame()
 
 if not df_realtime.empty and "Datetime" in df_realtime.columns:
+    # 今日のデータだけ抽出
     df_today_log = df_realtime[
         df_realtime["Datetime"].dt.strftime("%Y-%m-%d") == today_str
     ].copy()
 
     if not df_today_log.empty:
-        # ★修正: "BUY/SELL" だけでなく "買い/売り" も検知するように変更
-        # 2列目(Type)を文字列にして判定
-        # カラム名が Type でない場合も考慮して、2番目のカラムを使うとより安全だが、
-        # ここでは "Type" カラムがあると仮定（gspreadのget_all_recordsは1行目をヘッダーにするため）
+        # 時系列順に並べ替え（古い順）
+        df_today_log = df_today_log.sort_values("Datetime", ascending=True)
 
-        # 買いの合計
-        mask_buy = (
-            df_today_log["Type"]
-            .astype(str)
-            .str.contains("BUY|買い", case=False, na=False)
-        )
-        buys = df_today_log.loc[mask_buy, "Price"].sum()
+        # 損益積み上げ計算ロジック
+        temp_buy_price = None  # 一時的に買い価格を保持
 
-        # 売りの合計
-        mask_sell = (
-            df_today_log["Type"]
-            .astype(str)
-            .str.contains("SELL|売り", case=False, na=False)
-        )
-        sells = df_today_log.loc[mask_sell, "Price"].sum()
+        for index, row in df_today_log.iterrows():
+            action_type = str(row["Type"])
+            price = float(row["Price"])
 
-        today_profit = sells - buys
-        today_trades = len(df_today_log) // 2
+            # "買い" または "BUY" を検知
+            if "買い" in action_type or "BUY" in action_type:
+                temp_buy_price = price  # ポジションを持った
 
-col_t1, col_t2 = st.columns(2)
+            # "売り" または "SELL" を検知
+            elif "売り" in action_type or "SELL" in action_type:
+                if temp_buy_price is not None:
+                    # ペア成立！利益計算
+                    diff = price - temp_buy_price
+                    today_profit += diff
+                    today_trades += 1
+                    temp_buy_price = None  # ポジション解消
+
+        # ループ終了後にまだ temp_buy_price が残っていれば、それは「保有中」
+        current_position = temp_buy_price
+
+# --- 表示エリア ---
+col_t1, col_t2, col_t3 = st.columns(3)
+
+# 損益表示
+delta_color = "normal"
+if today_profit > 0:
+    delta_color = "inverse"  # プラスなら緑になる
+
 col_t1.metric(
-    "📅 今日の推定損益", f"¥{int(today_profit):,}", delta=f"{int(today_profit)}円"
+    "📅 今日の確定損益",
+    f"¥{int(today_profit):,}",
+    delta=f"{int(today_profit)}円",
+    delta_color=delta_color,
 )
-col_t2.metric("📊 今日のログ数", f"{len(df_today_log)}行")
+col_t2.metric("📊 完了トレード数", f"{today_trades}回")
 
+# 保有状況の表示
+if current_position is not None:
+    col_t3.metric("🚜 現在の状態", "保有中", f"取得単価: {int(current_position)}円")
+else:
+    col_t3.metric("🚜 現在の状態", "ノーポジ", "待機中")
+
+# 履歴テーブル (新しい順に戻して表示)
 if not df_today_log.empty:
     with st.expander("📝 今日のトレード履歴を見る", expanded=True):
         st.dataframe(
-            df_today_log[["Time", "Type", "Price", "Note"]].sort_values(
-                "Time", ascending=False
-            ),
+            df_today_log.sort_values("Datetime", ascending=False)[
+                ["Time", "Type", "Price", "Note"]
+            ],
             use_container_width=True,
             hide_index=True,
         )
