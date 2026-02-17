@@ -26,6 +26,7 @@ SHEET_KEY = (
 
 # パス解決
 CREDENTIALS_FILE = "credentials.json"
+# 親ディレクトリ等を探索するパス（環境に合わせて調整）
 LOCAL_ADJACENT_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "ufj_bot",
@@ -64,6 +65,7 @@ def load_data():
             data_his = sheet_his.get_all_records()
             df_his = pd.DataFrame(data_his)
             if not df_his.empty:
+                # 数値変換（エラー回避のため coerce を使用）
                 df_his["損益(円)"] = pd.to_numeric(
                     df_his["損益(円)"], errors="coerce"
                 ).fillna(0)
@@ -75,16 +77,24 @@ def load_data():
 
         # --- B. 今日のリアルタイム (realtime_logs) ---
         try:
-            sheet_rt = workbook.worksheet("realtime_logs")
+            sheet_rt = workbook.worksheet("realtime_logs_micro")
             data_rt = sheet_rt.get_all_records()
             df_rt = pd.DataFrame(data_rt)
+
             if not df_rt.empty:
-                # カラム名がずれている場合の保険（CSVアップロード時などの対策）
-                # 1列目をTimeとして扱う
+                # 1列目をTimeとして扱う（カラム名揺れ対策）
                 if "Time" not in df_rt.columns and len(df_rt.columns) >= 1:
                     df_rt.rename(columns={df_rt.columns[0]: "Time"}, inplace=True)
 
-                df_rt["Datetime"] = pd.to_datetime(df_rt["Time"])
+                # Datetime変換（エラー発生時はNaTにする）
+                df_rt["Datetime"] = pd.to_datetime(df_rt["Time"], errors="coerce")
+
+                # ★修正: 必須カラムが存在しない場合の欠損埋め
+                required_cols = ["Type", "Price", "Note"]
+                for col in required_cols:
+                    if col not in df_rt.columns:
+                        df_rt[col] = ""  # 空文字で埋める
+
         except Exception:
             df_rt = pd.DataFrame()
 
@@ -108,13 +118,15 @@ if not JSON_PATH:
     st.error("⚠️ credentials.json が見つかりません。")
     st.stop()
 
+#
+
 df_history, df_realtime = load_data()
 
 if df_history is None:
     st.stop()
 
 # =========================================================
-# 🟢 セクション1：本日のリアルタイム状況 (修正版)
+# 🟢 セクション1：本日のリアルタイム状況
 # =========================================================
 st.header("🟢 本日のリアルタイム状況")
 
@@ -124,10 +136,12 @@ current_position = None  # 現在保有中の価格
 today_str = datetime.datetime.now().strftime("%Y-%m-%d")
 df_today_log = pd.DataFrame()
 
+# データが存在し、かつDatetime変換に成功している行があるか確認
 if not df_realtime.empty and "Datetime" in df_realtime.columns:
-    # 今日のデータだけ抽出
-    df_today_log = df_realtime[
-        df_realtime["Datetime"].dt.strftime("%Y-%m-%d") == today_str
+    # NaT（変換失敗）を除外して、今日の日付でフィルタ
+    df_realtime_valid = df_realtime.dropna(subset=["Datetime"])
+    df_today_log = df_realtime_valid[
+        df_realtime_valid["Datetime"].dt.strftime("%Y-%m-%d") == today_str
     ].copy()
 
     if not df_today_log.empty:
@@ -138,8 +152,11 @@ if not df_realtime.empty and "Datetime" in df_realtime.columns:
         temp_buy_price = None  # 一時的に買い価格を保持
 
         for index, row in df_today_log.iterrows():
-            action_type = str(row["Type"])
-            price = float(row["Price"])
+            action_type = str(row.get("Type", ""))
+            try:
+                price = float(row.get("Price", 0))
+            except:
+                price = 0
 
             # "買い" または "BUY" を検知
             if "買い" in action_type or "BUY" in action_type:
@@ -182,10 +199,12 @@ else:
 # 履歴テーブル (新しい順に戻して表示)
 if not df_today_log.empty:
     with st.expander("📝 今日のトレード履歴を見る", expanded=True):
+        # カラムが存在するか最終確認してから表示
+        display_cols = ["Time", "Type", "Price", "Note"]
+        existing_cols = [c for c in display_cols if c in df_today_log.columns]
+
         st.dataframe(
-            df_today_log.sort_values("Datetime", ascending=False)[
-                ["Time", "Type", "Price", "Note"]
-            ],
+            df_today_log.sort_values("Datetime", ascending=False)[existing_cols],
             use_container_width=True,
             hide_index=True,
         )
@@ -214,6 +233,11 @@ else:
     col3.metric("📊 総トレード数", f"{int(total_trades)}回")
 
     # グラフ
+    # 日付型に変換してソート（グラフの時系列ズレ防止）
+    if "日付" in df_history.columns:
+        df_history["日付"] = pd.to_datetime(df_history["日付"], errors="coerce")
+        df_history = df_history.sort_values("日付")
+
     df_history["累積損益"] = df_history["損益(円)"].cumsum()
 
     col_chart1, col_chart2 = st.columns(2)
@@ -236,7 +260,11 @@ else:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # 履歴一覧
+    # 履歴一覧 (文字列に戻して表示)
     st.subheader("📋 履歴一覧 (最新10件)")
-    df_display = df_history.sort_values("日付", ascending=False).head(10)
+    # 日付を再度文字列にして見やすくする
+    df_display = df_history.copy()
+    df_display["日付"] = df_display["日付"].dt.strftime("%Y-%m-%d")
+    df_display = df_display.sort_values("日付", ascending=False).head(10)
+
     st.dataframe(df_display, use_container_width=True, hide_index=True)
