@@ -127,7 +127,11 @@ st.header("🟢 本日のリアルタイム状況")
 today_profit = 0
 today_trades = 0
 current_position = None
-today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
+# ★追加・修正：強制的に日本時間(JST)を取得する
+JST = datetime.timezone(datetime.timedelta(hours=+9), "JST")
+today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+
 df_today_log = pd.DataFrame()
 
 if not df_realtime.empty and "Datetime" in df_realtime.columns:
