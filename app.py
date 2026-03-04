@@ -1,16 +1,40 @@
 import gspread
+import numpy as np
 import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
 
-# --- 設定部分 ---
+# --- 1. ページ基本設定（スマホ最適化） ---
+st.set_page_config(
+    page_title="Altemist Dash",
+    page_icon="📈",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+# --- 2. スタイル調整（余白削減・文字サイズ最適化） ---
+st.markdown(
+    """
+    <style>
+    /* 上部の余白を極限まで削る */
+    .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+    /* タイトルとヘッダーのサイズ調整 */
+    h1 { font-size: 1.5rem !important; margin-bottom: -0.5rem; }
+    h2 { font-size: 1.1rem !important; margin-top: 1rem; margin-bottom: 0.5rem; color: #777; }
+    h3 { font-size: 1.0rem !important; margin-top: 0.5rem; }
+    /* メトリック（数字）のラベルサイズ */
+    [data-testid="stMetricLabel"] { font-size: 0.8rem !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# --- 3. 設定・認証 ---
 CREDENTIALS_FILE = "credentials.json"
 SHEET_ID = "1wKC4E_r1-1mhGSgIOkz4xRDCba2Ma9bq3phSnBrDXf8"
 
-st.set_page_config(page_title="運用ダッシュボード", page_icon="📈", layout="centered")
 
-
-# --- Google Sheetsからデータを取得する関数（60秒間キャッシュしてAPI制限を防ぐ） ---
+# --- 4. データ取得関数（60秒キャッシュ） ---
 @st.cache_data(ttl=60)
 def load_data():
     try:
@@ -24,19 +48,17 @@ def load_data():
         gc = gspread.authorize(credentials)
         spreadsheet = gc.open_by_key(SHEET_ID)
 
-        # ① 今日のトレード履歴を取得
-        worksheet_trades = spreadsheet.worksheet("altemist_trades")
-        data_trades = worksheet_trades.get_all_records()
-        df_trades = pd.DataFrame(data_trades)
+        # 履歴シート読み込み
+        ws_trades = spreadsheet.worksheet("altemist_trades")
+        df_t = pd.DataFrame(ws_trades.get_all_records())
 
-        # ② 日次の確定レポートを取得
-        worksheet_daily = spreadsheet.worksheet("altemist_daily")
-        data_daily = worksheet_daily.get_all_records()
-        df_daily = pd.DataFrame(data_daily)
+        # 日次シート読み込み
+        ws_daily = spreadsheet.worksheet("altemist_daily")
+        df_d = pd.DataFrame(ws_daily.get_all_records())
 
-        return df_trades, df_daily
+        return df_t, df_d
     except Exception as e:
-        st.error(f"データの読み込みに失敗しました: {e}")
+        st.error(f"データ取得エラー: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
 
@@ -44,75 +66,88 @@ def load_data():
 df_trades, df_daily = load_data()
 
 # ==========================================
-# 画面描画スタート
+# 5. 画面描画スタート
 # ==========================================
-st.title("📈 運用ダッシュボード (Altemist)")
 
-# --- データが空の場合の安全装置 ---
+st.markdown("# 📈 Altemist Dashboard")
+
+# データがない場合の表示
 if df_trades.empty and df_daily.empty:
-    st.warning(
-        "まだスプレッドシートにデータがありません。botが動き出すのをお待ちください！"
-    )
+    st.info("データ待機中... botの初回記録をお待ちください。")
     st.stop()
 
-# --- 計算ロジック（最新データから数値を抽出） ---
-# 今日の合計損益（見込含む）などを計算
-today_profit = (
-    df_trades["損益"].sum()
-    if not df_trades.empty and "損益" in df_trades.columns
-    else 0
-)
+# --- セクション1：本日の状況 ---
+st.markdown("## 🟢 本日の状況")
+
+# 集計ロジック
+today_profit = df_trades["損益"].sum() if "損益" in df_trades.columns else 0
 trade_count = len(df_trades)
+current_status = (
+    "待機中"
+    if df_trades.empty or df_trades.iloc[-1]["状態"] == "確定"
+    else "ポジション保有"
+)
 
-# 日次データから累計などを計算
-total_profit = (
-    df_daily["確定損益"].sum()
-    if not df_daily.empty and "確定損益" in df_daily.columns
-    else 0
-)
-total_trades = (
-    df_daily["トレード回数"].sum()
-    if not df_daily.empty and "トレード回数" in df_daily.columns
-    else 0
-)
-total_wins = (
-    df_daily["勝数"].sum() if not df_daily.empty and "勝数" in df_daily.columns else 0
-)
-win_rate = round((total_wins / total_trades * 100), 1) if total_trades > 0 else 0
-
-# --- セクション1：本日のリアルタイム状況 ---
-st.header("🟢 本日のリアルタイム状況")
 col1, col2, col3 = st.columns(3)
 with col1:
-    st.metric(label="📅 今日の損益 (見込含)", value=f"¥{today_profit:,}")
+    st.metric(label="今日の損益", value=f"¥{today_profit:,}")
 with col2:
-    st.metric(label="📊 本日のトレード数", value=f"{trade_count}回")
+    st.metric(label="トレード数", value=f"{trade_count}回")
 with col3:
-    st.metric(
-        label="🚜 現在の状態", value="稼働中"
-    )  # ※ここは将来APIで動的に変えられます
+    st.metric(label="状態", value=current_status)
 
-st.subheader("📝 今日のトレード履歴")
+# 今日の履歴（畳まない設定）
+st.markdown("### 📝 今日の履歴")
 if not df_trades.empty:
-    st.dataframe(df_trades, use_container_width=True, hide_index=True)
+    # 直近を上に表示
+    st.dataframe(df_trades.iloc[::-1], use_container_width=True, hide_index=True)
 
 st.divider()
 
-# --- セクション2：運用成績レポート ---
-st.header("📊 運用成績レポート (日次確定)")
-col4, col5, col6 = st.columns(3)
-with col4:
-    st.metric(label="💰 累計確定損益", value=f"¥{total_profit:,}")
-with col5:
-    st.metric(label="🎯 累計勝率", value=f"{win_rate}%")
-with col6:
-    st.metric(label="📊 総トレード数", value=f"{total_trades}回")
+# --- セクション2：AI分析 (Random Forest) ---
+# 履歴の最後の行から最新の予測スコアを抽出
+st.markdown("## 🧠 AI分析ステータス")
+
+if not df_trades.empty and "上昇確率" in df_trades.columns:
+    last_row = df_trades.iloc[-1]
+    # 文字列（78%等）を数値に変換
+    try:
+        up_p = float(str(last_row["上昇確率"]).replace("%", "")) / 100
+        down_p = float(str(last_row["下落確率"]).replace("%", "")) / 100
+    except:
+        up_p, down_p = 0.5, 0.5
+
+    st.markdown("### 🎯 次の一手の確信度")
+    c_up, c_down = st.columns(2)
+    with c_up:
+        st.write(f"📈 上昇: {up_p * 100:.1f}%")
+        st.progress(up_p)
+    with c_down:
+        st.write(f"📉 下落: {down_p * 100:.1f}%")
+        st.progress(down_p)
+
+st.divider()
+
+# --- セクション3：累計成績 ---
+st.markdown("## 📊 運用レポート")
 
 if not df_daily.empty:
-    st.subheader("📈 資産推移")
-    # 累計損益のカラムを作って折れ線グラフに
+    total_profit = df_daily["確定損益"].sum()
+    total_wins = df_daily["勝数"].sum()
+    total_t = df_daily["トレード回数"].sum()
+    win_rate = round((total_wins / total_t * 100), 1) if total_t > 0 else 0
+
+    col4, col5, col6 = st.columns(3)
+    with col4:
+        st.metric(label="累計損益", value=f"¥{total_profit:,}")
+    with col5:
+        st.metric(label="累計勝率", value=f"{win_rate}%")
+    with col6:
+        st.metric(label="総回数", value=f"{total_t}回")
+
+    st.markdown("### 📈 資産推移")
     df_daily["累計"] = df_daily["確定損益"].cumsum()
     st.line_chart(df_daily.set_index("日付")["累計"])
 
-    st.subheader("📊 日別損益")
+    st.markdown("### 📊 日別損益")
     st.bar_chart(df_daily.set_index("日付")["確定損益"])
