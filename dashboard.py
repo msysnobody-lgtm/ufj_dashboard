@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 
 import gspread
 import pandas as pd
@@ -73,9 +74,8 @@ def load_data():
         except Exception:
             df_his = pd.DataFrame()
 
-        # --- B. 今日のリアルタイム (★シート名修正済み) ---
+        # --- B. 今日のリアルタイム ---
         try:
-            # 先物用のシート名に変更
             sheet_rt = workbook.worksheet("realtime_logs_micro")
             data_rt = sheet_rt.get_all_records()
             df_rt = pd.DataFrame(data_rt)
@@ -127,8 +127,8 @@ st.header("🟢 本日のリアルタイム状況")
 today_profit = 0
 today_trades = 0
 current_position = None
+current_qty = 0
 
-# ★追加・修正：強制的に日本時間(JST)を取得する
 JST = datetime.timezone(datetime.timedelta(hours=+9), "JST")
 today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
 
@@ -141,45 +141,44 @@ if not df_realtime.empty and "Datetime" in df_realtime.columns:
     ].copy()
 
     if not df_today_log.empty:
-        # 古い順に並べてシミュレーション
         df_today_log = df_today_log.sort_values("Datetime", ascending=True)
 
         temp_buy_price = None
 
         for index, row in df_today_log.iterrows():
             action_type = str(row.get("Type", ""))
+            note_text = str(row.get("Note", ""))
+
             try:
                 price = float(row.get("Price", 0))
             except:
                 price = 0
 
-            # -------------------------------------------------
-            # ★修正箇所: 損益計算ロジック
-            # -------------------------------------------------
+            # Note列から「〇枚」の数字を抽出（記載がない場合は1枚とする）
+            qty = 1
+            match = re.search(r"(\d+)枚", note_text)
+            if match:
+                qty = int(match.group(1))
 
-            # エントリー検知 ("買い" or "BUY")
+            # エントリー検知
             if "買い" in action_type or "BUY" in action_type:
                 temp_buy_price = price
+                current_qty = qty
 
-            # 決済検知 ("売り" or "SELL" or "決済")
-            # ※ 先物ボットは "決済" という文字を使うためここに追加
+            # 決済検知
             elif (
                 "売り" in action_type or "SELL" in action_type or "決済" in action_type
             ):
                 if temp_buy_price is not None:
-                    # 利益計算 (買いエントリー前提)
                     diff = price - temp_buy_price
 
-                    # 先物マイクロの場合、値幅×10倍などの計算が必要ならここに入れる
-                    # 今回のログは「Price」そのものが円建てではなく指数値だが、
-                    # ボット側でログに書くときに指数差分ではなく円換算していなければ、
-                    # ここで単なる差額(値幅)が表示される。
-                    # ★日経225マイクロは x10円 なので、もし金額ベースで見たいなら x10 する
-                    profit_yen = diff * 10
+                    # 損益計算: 値幅 × 10円 × 枚数
+                    profit_yen = diff * 10 * qty
 
                     today_profit += profit_yen
                     today_trades += 1
                     temp_buy_price = None
+                    current_qty = 0
 
         current_position = temp_buy_price
 
@@ -200,7 +199,11 @@ col_t1.metric(
 col_t2.metric("📊 完了トレード数", f"{today_trades}回")
 
 if current_position is not None:
-    col_t3.metric("🚜 現在の状態", "保有中", f"取得単価: {int(current_position)}")
+    col_t3.metric(
+        "🚜 現在の状態",
+        f"保有中 ({current_qty}枚)",
+        f"取得単価: {int(current_position)}",
+    )
 else:
     col_t3.metric("🚜 現在の状態", "ノーポジ", "待機中")
 
